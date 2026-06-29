@@ -19,6 +19,9 @@
           screen=train    -> filas de recrutamento (quartel/estábulo/oficina)
 
    v1.0.0: primeira versão.
+   v1.1.0: carrega todos os dados primeiro (tela de progresso simples,
+           igual o armazem.js) e só monta a tabela completa no final,
+           em vez de ir preenchendo linha por linha.
 ============================================================ */
 (function () {
   'use strict';
@@ -151,40 +154,26 @@
     return groups;
   }
 
-  // ---------- UI ----------
-  const $panel = $(`
-    <div id="${PANEL_ID}" style="
-      position:fixed; top:5%; left:50%; transform:translateX(-50%);
-      width:95%; max-width:1300px; max-height:88vh; overflow:auto;
+  // ---------- UI: tela de carregamento (exibida primeiro) ----------
+  const LOADING_ID = 'aa-loading';
+  $('#' + LOADING_ID).remove();
+  const $loading = $(`
+    <div id="${LOADING_ID}" style="
+      position:fixed; top:50%; left:50%; transform:translate(-50%, -50%);
       background:${colors.bg}; border:2px solid ${colors.border};
       border-radius:6px; box-shadow:0 4px 18px rgba(0,0,0,0.5);
-      z-index:99999; font-family:Verdana, Arial, sans-serif; font-size:12px;
-      color:${colors.text};
+      z-index:99999; font-family:Verdana, Arial, sans-serif; font-size:13px;
+      color:${colors.text}; padding:0; min-width:280px;
     ">
       <div style="background:${colors.headerBg}; color:${colors.headerText}; padding:8px 12px;
-                  display:flex; justify-content:space-between; align-items:center;
                   text-shadow:1px 1px 2px #000;">
         <strong>Account Analyser</strong>
-        <span id="aa-close" style="cursor:pointer; font-weight:bold;">✕</span>
       </div>
-      <div style="padding:8px 12px; border-bottom:1px solid ${colors.border}; display:flex; gap:8px; align-items:center;">
-        <select id="aa-filter-group" style="flex:1; padding:4px 6px; border:1px solid ${colors.border}; border-radius:3px;">
-          <option value="">Todas as aldeias</option>
-        </select>
-        <span id="aa-status" style="white-space:nowrap;">Carregando...</span>
-      </div>
-      <div style="overflow:auto;">
-        <table id="aa-table" class="vis" style="width:100%; border-collapse:collapse;">
-          <thead>
-            <tr id="aa-head"></tr>
-          </thead>
-          <tbody id="aa-body"></tbody>
-        </table>
-      </div>
+      <div id="aa-loading-status" style="padding:16px; text-align:center;">Carregando lista de aldeias...</div>
     </div>
   `).appendTo('body');
 
-  $('#aa-close').on('click', () => $panel.remove());
+  function setStatus(text) { $('#aa-loading-status').text(text); }
 
   const COLUMNS = [
     { key: 'name',        label: 'Aldeia' },
@@ -198,23 +187,83 @@
     { key: 'garage',      label: 'Oficina' }
   ];
 
-  const $head = $('#aa-head');
-  COLUMNS.forEach(col => {
-    $head.append(`
-      <th data-key="${col.key}" style="
-        border:1px solid ${colors.border}; padding:5px 8px; cursor:pointer;
-        background:${colors.headerBg}; color:${colors.headerText};
-        white-space:nowrap; text-shadow:1px 1px 2px #000;
-      ">${col.label} <span class="aa-arrow"></span></th>
-    `);
-  });
-
   let villages = [];      // dados completos (carregados)
   let groupFilterIds = null; // null = sem filtro
   let sortKey = 'name';
   let sortAsc = true;
+  let $head = null;
 
-  function setStatus(text) { $('#aa-status').text(text); }
+  // Monta o painel final (só chamado depois que TODOS os dados já
+  // foram carregados, igual o armazem.js faz).
+  function buildPanel() {
+    $('#' + PANEL_ID).remove();
+    const $panel = $(`
+      <div id="${PANEL_ID}" style="
+        position:fixed; top:5%; left:50%; transform:translateX(-50%);
+        width:95%; max-width:1300px; max-height:88vh; overflow:auto;
+        background:${colors.bg}; border:2px solid ${colors.border};
+        border-radius:6px; box-shadow:0 4px 18px rgba(0,0,0,0.5);
+        z-index:99999; font-family:Verdana, Arial, sans-serif; font-size:12px;
+        color:${colors.text};
+      ">
+        <div style="background:${colors.headerBg}; color:${colors.headerText}; padding:8px 12px;
+                    display:flex; justify-content:space-between; align-items:center;
+                    text-shadow:1px 1px 2px #000;">
+          <strong>Account Analyser</strong>
+          <span id="aa-close" style="cursor:pointer; font-weight:bold;">✕</span>
+        </div>
+        <div style="padding:8px 12px; border-bottom:1px solid ${colors.border}; display:flex; gap:8px; align-items:center;">
+          <select id="aa-filter-group" style="flex:1; padding:4px 6px; border:1px solid ${colors.border}; border-radius:3px;">
+            <option value="">Todas as aldeias</option>
+          </select>
+          <span id="aa-final-status" style="white-space:nowrap;"></span>
+        </div>
+        <div style="overflow:auto;">
+          <table id="aa-table" class="vis" style="width:100%; border-collapse:collapse;">
+            <thead>
+              <tr id="aa-head"></tr>
+            </thead>
+            <tbody id="aa-body"></tbody>
+          </table>
+        </div>
+      </div>
+    `).appendTo('body');
+
+    $('#aa-close').on('click', () => $panel.remove());
+
+    $head = $('#aa-head');
+    COLUMNS.forEach(col => {
+      $head.append(`
+        <th data-key="${col.key}" style="
+          border:1px solid ${colors.border}; padding:5px 8px; cursor:pointer;
+          background:${colors.headerBg}; color:${colors.headerText};
+          white-space:nowrap; text-shadow:1px 1px 2px #000;
+        ">${col.label} <span class="aa-arrow"></span></th>
+      `);
+    });
+
+    $head.on('click', 'th', function () {
+      const key = $(this).data('key');
+      if (sortKey === key) sortAsc = !sortAsc; else { sortKey = key; sortAsc = true; }
+      renderTable();
+    });
+
+    $('#aa-filter-group').on('change', function () {
+      const gid = $(this).val();
+      if (!gid) { groupFilterIds = null; renderTable(); return; }
+      $('#aa-final-status').text('Filtrando grupo...');
+      $.get(villageUrl(game_data.village.id, 'overview_villages', `mode=prod&group=${gid}`), html => {
+        const ids = parseVillageList(html).map(v => v.id);
+        groupFilterIds = new Set(ids);
+        renderTable();
+        $('#aa-final-status').text(`${villages.filter(v => groupFilterIds.has(v.id)).length} aldeia(s) no grupo.`);
+      }).fail(() => $('#aa-final-status').text('Falha ao filtrar grupo.'));
+    });
+
+    loadGroups();
+    renderTable();
+    $('#aa-final-status').text(`${villages.length} aldeia(s) carregada(s).`);
+  }
 
   function renderTable() {
     const $body = $('#aa-body').empty();
@@ -253,12 +302,6 @@
     $head.find(`th[data-key="${sortKey}"] .aa-arrow`).text(sortAsc ? '▲' : '▼');
   }
 
-  $head.on('click', 'th', function () {
-    const key = $(this).data('key');
-    if (sortKey === key) sortAsc = !sortAsc; else { sortKey = key; sortAsc = true; }
-    renderTable();
-  });
-
   function loadGroups() {
     $.get(villageUrl(game_data.village.id, 'overview_villages', 'mode=groups&type=dynamic'), html => {
       parseGroupList(html).forEach(g => {
@@ -266,18 +309,6 @@
       });
     }).fail(() => console.warn('[AccountAnalyser] Falha ao carregar grupos.'));
   }
-
-  $('#aa-filter-group').on('change', function () {
-    const gid = $(this).val();
-    if (!gid) { groupFilterIds = null; renderTable(); return; }
-    setStatus('Filtrando grupo...');
-    $.get(villageUrl(game_data.village.id, 'overview_villages', `mode=prod&group=${gid}`), html => {
-      const ids = parseVillageList(html).map(v => v.id);
-      groupFilterIds = new Set(ids);
-      renderTable();
-      setStatus(`${villages.filter(v => groupFilterIds.has(v.id)).length} aldeia(s) no grupo.`);
-    }).fail(() => setStatus('Falha ao filtrar grupo.'));
-  });
 
   // ---------- Carregamento principal ----------
   async function main() {
@@ -292,8 +323,6 @@
         farm: '...', build: '...', barracks: '...', stable: '...', garage: '...'
       }
     }));
-    renderTable();
-    loadGroups();
 
     const now = new Date();
 
@@ -360,11 +389,12 @@
         Object.keys(v.display).forEach(k => { if (v.display[k] === '...') v.display[k] = 'Erro'; });
       }
 
-      renderTable();
       await sleep(300);
     }
 
-    setStatus(`${villages.length} aldeia(s) carregada(s).`);
+    // Só agora, com TODOS os dados prontos, monta e exibe a tela final.
+    $loading.remove();
+    buildPanel();
   }
 
   main();
