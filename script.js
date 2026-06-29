@@ -22,6 +22,11 @@
    v1.1.0: carrega todos os dados primeiro (tela de progresso simples,
            igual o armazem.js) e só monta a tabela completa no final,
            em vez de ir preenchendo linha por linha.
+   v1.2.0: corrige Pontuação/Armazém/Fazenda vindo "?" — o JSON.parse do
+           game_data inteiro estava falhando silenciosamente (mesmo bug
+           já visto no armazem.js). Agora cada campo é extraído por
+           regex direto, e a partir do HTML de screen=main (que tem o
+           game_data completo), não mais de screen=overview.
 ============================================================ */
 (function () {
   'use strict';
@@ -54,30 +59,22 @@
   }
 
   // Extrai um campo numérico simples de dentro do game_data via regex,
-  // útil pra wood_prod/stone_prod/iron_prod/wood/stone/iron (decimais).
+  // útil pra wood_prod/stone_prod/iron_prod/wood/stone/iron/points/
+  // storage_max/pop_max/pop (decimais ou inteiros). Retorna null se não
+  // encontrar (em vez de 0), pra diferenciar "não encontrado" de "zero".
   function extractFloat(html, key) {
     const m = html.match(new RegExp('"' + key + '":"?([\\d.]+)"?'));
-    return m ? parseFloat(m[1]) : 0;
+    return m ? parseFloat(m[1]) : null;
   }
 
-  // Extrai o bloco "var game_data = {...};" inteiro fazendo contagem de
-  // chaves (regex simples não funciona porque o objeto é profundamente
-  // aninhado). Retorna o objeto já parseado via JSON.parse, ou null.
-  function extractGameData(html) {
-    const idx = html.indexOf('var game_data');
-    if (idx === -1) return null;
-    const start = html.indexOf('{', idx);
-    if (start === -1) return null;
-    let depth = 0, i = start;
-    for (; i < html.length; i++) {
-      if (html[i] === '{') depth++;
-      else if (html[i] === '}') {
-        depth--;
-        if (depth === 0) { i++; break; }
-      }
-    }
-    const raw = html.slice(start, i);
-    try { return JSON.parse(raw); } catch (e) { return null; }
+  // Nível de um edifício específico dentro do bloco "buildings":{...} do
+  // game_data. Mesmo padrão usado no armazem.js pro nível do armazém.
+  // OBS: JSON.parse do game_data inteiro falha silenciosamente (não é
+  // JSON estrito) — por isso extraímos campo a campo via regex, igual
+  // já resolvido no armazem.js, em vez de tentar parsear o objeto todo.
+  function extractBuildingLevel(html, key) {
+    const m = html.match(new RegExp('"buildings":\\{[^}]*"' + key + '":"?(\\d+)"?'));
+    return m ? parseInt(m[1], 10) : null;
   }
 
   // Texto de data do jogo ("hoje às HH:MM:SS", "amanhã às HH:MM:SS",
@@ -331,24 +328,30 @@
       setStatus(`Lendo aldeia ${i + 1} de ${villages.length}...`);
 
       try {
-        // --- 1) screen=overview: produção, recursos atuais, dados gerais ---
+        // --- 1) screen=overview: produção e recursos atuais (regex) ---
         const ovHtml = await $.get(villageUrl(v.id, 'overview'));
-        const gd = extractGameData(ovHtml);
 
-        const rateWood = extractFloat(ovHtml, 'wood_prod') * 3600;
-        const rateStone = extractFloat(ovHtml, 'stone_prod') * 3600;
-        const rateIron = extractFloat(ovHtml, 'iron_prod') * 3600;
-        const curWood = extractFloat(ovHtml, 'wood');
-        const curStone = extractFloat(ovHtml, 'stone');
-        const curIron = extractFloat(ovHtml, 'iron');
+        const rateWood = (extractFloat(ovHtml, 'wood_prod') || 0) * 3600;
+        const rateStone = (extractFloat(ovHtml, 'stone_prod') || 0) * 3600;
+        const rateIron = (extractFloat(ovHtml, 'iron_prod') || 0) * 3600;
+        const curWood = extractFloat(ovHtml, 'wood') || 0;
+        const curStone = extractFloat(ovHtml, 'stone') || 0;
+        const curIron = extractFloat(ovHtml, 'iron') || 0;
 
-        const points = gd ? +gd.village.points : null;
-        const storageMax = gd ? +gd.village.storage_max : null;
-        const popMax = gd ? +gd.village.pop_max : null;
-        const pop = gd ? +gd.village.pop : null;
-        const storageLevel = gd && gd.village.buildings ? gd.village.buildings.storage : null;
+        // --- 2) screen=main: game_data completo (points/storage_max/pop_max/
+        //     pop/nível do armazém) + fila de construção/demolição.
+        //     O game_data fica no <head>, antes de qualquer outro bloco que
+        //     também use a chave "points" (ex: BuildingMain.buildings), então
+        //     o primeiro match da regex é sempre o do village.points correto.
+        const mainHtml = await $.get(villageUrl(v.id, 'main'));
 
-        const timeFor = (cur, rate) => rate > 0 ? Math.max(0, storageMax - cur) / rate * 3600 : Infinity;
+        const points = extractFloat(mainHtml, 'points');
+        const storageMax = extractFloat(mainHtml, 'storage_max');
+        const popMax = extractFloat(mainHtml, 'pop_max');
+        const pop = extractFloat(mainHtml, 'pop');
+        const storageLevel = extractBuildingLevel(mainHtml, 'storage');
+
+        const timeFor = (cur, rate) => rate > 0 ? Math.max(0, (storageMax || 0) - cur) / rate * 3600 : Infinity;
         const timeSec = Math.min(timeFor(curWood, rateWood), timeFor(curStone, rateStone), timeFor(curIron, rateIron));
         const fullAt = isFinite(timeSec) ? new Date(now.getTime() + timeSec * 1000) : null;
 
@@ -366,8 +369,6 @@
           ? `${pop.toLocaleString('pt-BR')}/${popMax.toLocaleString('pt-BR')} (${Math.round(pop / popMax * 100)}%)`
           : '?';
 
-        // --- 2) screen=main: fila de construção/demolição ---
-        const mainHtml = await $.get(villageUrl(v.id, 'main'));
         const mainDoc = parseDoc(mainHtml);
         const buildQueue = mainDoc.querySelector('#buildqueue');
         const buildDate = lastQueueDate(buildQueue, now);
